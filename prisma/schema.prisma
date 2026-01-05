@@ -1,0 +1,147 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum CommitmentStatus {
+  created
+  active
+  success
+  failed
+}
+
+enum TaskType {
+  steps_daily
+  km_daily
+  sessions_weekly
+  daily_hard
+}
+
+enum TrackingSource {
+  api
+  manual
+}
+
+enum PaymentStatus {
+  paid
+  refunded
+  forfeited
+  failed_payment
+}
+
+enum VerdictResult {
+  success
+  failure
+}
+
+model User {
+  id               String   @id @default(uuid())
+
+  stripeCustomerId String?  @unique
+
+  planExpiresAt    DateTime?
+
+  plan             String   @default("student")
+
+
+  email            String   @unique
+  createdAt        DateTime @default(now())
+
+  credibilityScore Int      @default(0)
+
+  maxStakeCents    Int      @default(1000) // 10€
+
+  commitments Commitment[]
+
+  auditLogs   AuditLog[]
+}
+
+model Commitment {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category     String   @default("sport")
+  taskType     TaskType
+  targetValue  Int
+  durationDays Int
+  startDate    DateTime
+  endDate      DateTime
+
+  status CommitmentStatus @default(created)
+
+  stakeCents Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  trackingLogs TrackingLog[]
+  checkIns     CheckIn[]
+  payment      Payment?
+  verdict      Verdict?
+}
+
+model TrackingLog {
+  id           String     @id @default(uuid())
+  commitmentId String
+  commitment   Commitment @relation(fields: [commitmentId], references: [id], onDelete: Cascade)
+
+  date      DateTime
+  value     Int
+  source    TrackingSource
+  createdAt DateTime       @default(now())
+
+  @@unique([commitmentId, date])
+}
+
+model Payment {
+  id           String     @id @default(uuid())
+  commitmentId String     @unique
+  commitment   Commitment @relation(fields: [commitmentId], references: [id], onDelete: Cascade)
+
+  stripePaymentIntentId String @unique
+  amountCents           Int
+  currency              String @default("eur")
+
+  status    PaymentStatus @default(paid)
+  createdAt DateTime      @default(now())
+}
+
+model Verdict {
+  id           String     @id @default(uuid())
+  commitmentId String     @unique
+  commitment   Commitment @relation(fields: [commitmentId], references: [id], onDelete: Cascade)
+
+  result    VerdictResult
+  decidedAt DateTime      @default(now())
+  reason    String?
+}
+
+model AuditLog {
+  id     String  @id @default(uuid())
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  action    String
+  metadata  Json?
+  createdAt DateTime @default(now())
+}
+
+model CheckIn {
+  id           String   @id @default(uuid())
+  commitmentId String
+  date         DateTime
+  success      Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  commitment Commitment @relation(fields: [commitmentId], references: [id], onDelete: Cascade)
+
+  @@unique([commitmentId, date])
+}
