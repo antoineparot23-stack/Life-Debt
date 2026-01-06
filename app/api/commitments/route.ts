@@ -6,6 +6,17 @@ type CommitmentStatus = "created" | "active" | "failed" | "completed";
 
 const STATUS_VALUES: CommitmentStatus[] = ["created", "active", "failed", "completed"];
 
+type CommitmentRow = {
+  id: string;
+  status: string;
+  startDate: Date;
+  endDate: Date;
+  durationDays: number;
+  taskType: string;
+  userId: string;
+};
+
+
 function planRules(plan: string) {
   if (plan === "builder") {
     return {
