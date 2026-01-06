@@ -30,3 +30,9 @@
     "typescript": "^5"
   }
 }
+
+{
+  "scripts": {
+    "postinstall": "prisma generate"
+  }
+}
