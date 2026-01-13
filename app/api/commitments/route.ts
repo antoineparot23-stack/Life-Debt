@@ -145,7 +145,8 @@ export async function GET(req: Request) {
 
     const updates: Promise<any>[] = [];
 
-    const computed = commitments.map((c) => {
+    const computed = commitments.map((c: CommitmentRow) => {
+
       const currentStatus = c.status;
 
       const newStatus = computeStatus({
