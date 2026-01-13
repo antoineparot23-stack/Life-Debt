@@ -1,232 +1,102 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { CommitmentStatus, TaskType } from "@prisma/client";
 
-type TaskType = "steps_daily" | "km_daily" | "sessions_weekly" | "daily_hard";
-type CommitmentStatus = "created" | "active" | "failed" | "completed";
+type Plan = "student" | "builder" | "hardcore" | string;
 
-const STATUS_VALUES: CommitmentStatus[] = ["created", "active", "failed", "completed"];
+type CheckInRow = {
+  id: string;
+  commitmentId: string;
+  date: Date;
+  success: boolean;
+  createdAt: Date;
+};
 
 type CommitmentRow = {
   id: string;
-  status: string;
-  startDate: Date;
-  endDate: Date;
-  durationDays: number;
-  taskType: string;
   userId: string;
-};
-
-
-function planRules(plan: string) {
-  if (plan === "builder") {
-    return {
-      maxActive: 3,
-      maxStakeCents: 3000,
-      allowDailyHard: true,
-    };
-  }
-
-  if (plan === "hardcore") {
-    return {
-      maxActive: Infinity,
-      maxStakeCents: Infinity,
-      allowDailyHard: true,
-    };
-  }
-
-  // student (default)
-  return {
-    maxActive: 1,
-    maxStakeCents: 1000,
-    allowDailyHard: false,
-  };
-}
-
-function toStatus(s: unknown): CommitmentStatus {
-  if (typeof s !== "string") return "created";
-  return (STATUS_VALUES as string[]).includes(s) ? (s as CommitmentStatus) : "created";
-}
-
-function startOfDayLocal(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
-function addDays(d: Date, days: number) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + days);
-  return x;
-}
-
-function sameDayLocal(a: Date, b: Date) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
-
-function allowedMisses(taskType: TaskType) {
-  if (taskType === "daily_hard") return 0;
-  if (taskType === "sessions_weekly") return 2;
-  return 1;
-}
-
-function computeStatus(commitment: {
-  taskType: TaskType;
+  category: string;
+  taskType: string;
+  targetValue: number;
+  durationDays: number;
   startDate: Date;
   endDate: Date;
   status: CommitmentStatus;
+  createdAt: Date;
+  stakeCents: number;
+  checkIns: CheckInRow[];
+};
+
+function planRules(plan: Plan) {
+  if (plan === "builder") {
+    return { maxActive: 3, maxStakeCents: 3000, allowDailyHard: true };
+  }
+  if (plan === "hardcore") {
+    return {
+      maxActive: Number.MAX_SAFE_INTEGER,
+      maxStakeCents: Number.MAX_SAFE_INTEGER,
+      allowDailyHard: true,
+    };
+  }
+  return { maxActive: 1, maxStakeCents: 1000, allowDailyHard: false };
+}
+
+function computeStatus(input: {
+  status: CommitmentStatus;
+  startDate: Date;
+  endDate: Date;
   checkIns: { date: Date; success: boolean }[];
 }): CommitmentStatus {
+  const { status, startDate, endDate, checkIns } = input;
+
+  // ⚠️ Si ton enum n'a PAS ces valeurs exactes, ça sera souligné.
+  // Dans ce cas, tu me colles enum CommitmentStatus de schema.prisma et je l'ajuste.
+  const created = CommitmentStatus.created;
+  const active = CommitmentStatus.active;
+  const failed = CommitmentStatus.failed;
+  const completed = CommitmentStatus.success;
+
+  if (status === failed || status === completed) return status;
   const now = new Date();
+  const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
-  const startDay = startOfDayLocal(commitment.startDate);
-  const endDay = startOfDayLocal(commitment.endDate);
-  const today = startOfDayLocal(now);
-
-  // Statuts finaux : on ne change pas (MVP)
-  if (commitment.status === "failed" || commitment.status === "completed") {
-    return commitment.status;
+  // created -> active
+  if (status === created) {
+    return startDate <= now ? active : created;
   }
 
-  // Pas encore commencé
-  if (today < startDay) return "created";
+  // active -> verdict si terminé
+  if (status === active && endDate < todayUTC) {
+    const startDay = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
+    const endDay = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate()));
 
-  // Exigence :
-  // - si terminé : jusqu’à endDay inclus
-  // - sinon : jusqu’à hier (aujourd’hui est rattrapable)
-  let requireUntil = addDays(today, -1);
-  const finished = today > endDay;
-  if (finished) requireUntil = endDay;
+    const msDay = 24 * 60 * 60 * 1000;
+    const days = Math.max(1, Math.round((endDay.getTime() - startDay.getTime()) / msDay));
 
-  // Rien à exiger si période trop courte
-  if (requireUntil < startDay) {
-    return finished ? "completed" : "active";
-  }
-
-  const maxMisses = allowedMisses(commitment.taskType);
-
-  const successDays = commitment.checkIns
-    .filter((c) => c.success)
-    .map((c) => startOfDayLocal(c.date));
-
-  let misses = 0;
-  for (let d = new Date(startDay); d <= requireUntil; d = addDays(d, 1)) {
-    const has = successDays.some((sd) => sameDayLocal(sd, d));
-    if (!has) misses++;
-    if (misses > maxMisses) return "failed";
-  }
-
-  if (finished) return "completed";
-  return "active";
-}
-
-// CREATE commitment
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-
-    // ✅ stakeCents ajouté ici
-    const { email, taskType, targetValue, durationDays, stakeCents } = body;
-
-    if (!email || !taskType || !targetValue || !durationDays) {
-      return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+    const okDays = new Set<string>();
+    for (const ci of checkIns) {
+      if (!ci.success) continue;
+      const d = new Date(Date.UTC(ci.date.getUTCFullYear(), ci.date.getUTCMonth(), ci.date.getUTCDate()));
+      okDays.add(d.toISOString().slice(0, 10));
     }
 
-    // Sécurise stakeCents (0 à 30€ max => 3000 cents)
-    const stake = Number(stakeCents ?? 0);
-    if (!Number.isFinite(stake) || stake < 0 || stake > 3000) {
-      return NextResponse.json({ error: "Invalid stakeCents" }, { status: 400 });
+    let allOk = true;
+    for (let i = 0; i < days; i++) {
+      const d = new Date(startDay.getTime() + i * msDay);
+      const key = d.toISOString().slice(0, 10);
+      if (!okDays.has(key)) {
+        allOk = false;
+        break;
+      }
     }
 
-    const user = await db.user.upsert({
-      where: { email },
-      update: {},
-      create: { email },
-    });
-
-    const rules = planRules(user.plan);
-
-// 1️⃣ limite d'engagements actifs
-const activeCount = await db.commitment.count({
-  where: {
-    userId: user.id,
-    status: { in: ["created", "active"] },
-  },
-});
-
-if (activeCount >= rules.maxActive) {
-  return NextResponse.json(
-    { error: "Limite d'engagements atteinte pour ton plan" },
-    { status: 403 }
-  );
-}
-
-// 2️⃣ limite de stake
-if (stakeCents > rules.maxStakeCents) {
-  return NextResponse.json(
-    { error: "Stake trop élevé pour ton plan" },
-    { status: 403 }
-  );
-}
-
-// 3️⃣ tâche interdite
-if (taskType === "daily_hard" && !rules.allowDailyHard) {
-  return NextResponse.json(
-    { error: "Cette tâche nécessite un plan supérieur" },
-    { status: 403 }
-  );
-}
-
-
-
-// 2️⃣ limite de stake
-if (stake > rules.maxStakeCents) {
-  return NextResponse.json(
-    { error: "Stake trop élevé pour ton plan" },
-    { status: 403 }
-  );
-}
-
-// 3️⃣ tâches interdites
-if (taskType === "daily_hard" && !rules.allowDailyHard) {
-  return NextResponse.json(
-    { error: "Cette tâche nécessite un plan supérieur" },
-    { status: 403 }
-  );
-}
-
-
-    const startDate = new Date();
-    const endDate = new Date(
-      startDate.getTime() + Number(durationDays) * 24 * 60 * 60 * 1000
-    );
-
-    const commitment = await db.commitment.create({
-      data: {
-        userId: user.id,
-        category: "sport",
-        taskType,
-        targetValue: Number(targetValue),
-        durationDays: Number(durationDays),
-        startDate,
-        endDate,
-        status: "created",
-        // ✅ stake enregistré en cents
-        stakeCents: stake as number,
-       },
-    });
-
-    return NextResponse.json({ commitment }, { status: 201 });
-  } catch (error) {
-    console.error(error);
-    return NextResponse.json({ error: "Server error" }, { status: 500 });
+    return allOk ? completed : failed;
   }
+
+  return active;
 }
 
-// READ commitments (+ include checkIns)
+// -------------------- GET --------------------
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -236,25 +106,52 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Missing email" }, { status: 400 });
     }
 
-    const user = await db.user.findUnique({ where: { email } });
-    if (!user) return NextResponse.json({ commitments: [] }, { status: 200 });
+    const user = await db.user.findUnique({
+      where: { email },
+      select: { id: true },
+    });
 
-    const commitments = await db.commitment.findMany({
+    if (!user) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
+
+    const commitments: CommitmentRow[] = await db.commitment.findMany({
       where: { userId: user.id },
-      include: { checkIns: true },
       orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        userId: true,
+        category: true,
+        taskType: true,
+        targetValue: true,
+        durationDays: true,
+        startDate: true,
+        endDate: true,
+        status: true,
+        createdAt: true,
+        stakeCents: true,
+        checkIns: {
+          orderBy: { date: "asc" },
+          select: {
+            id: true,
+            commitmentId: true,
+            date: true,
+            success: true,
+            createdAt: true,
+          },
+        },
+      },
     });
 
     const updates: Promise<any>[] = [];
 
     const computed = commitments.map((c) => {
-      const currentStatus = toStatus(c.status);
+      const currentStatus = c.status;
 
       const newStatus = computeStatus({
-        taskType: c.taskType as TaskType,
+        status: currentStatus,
         startDate: c.startDate,
         endDate: c.endDate,
-        status: currentStatus,
         checkIns: c.checkIns.map((x) => ({ date: x.date, success: x.success })),
       });
 
@@ -262,13 +159,19 @@ export async function GET(req: Request) {
         updates.push(
           db.commitment.update({
             where: { id: c.id },
-            // ✅ Pour éviter les soucis TS/Prisma : set
-            data: { status: { set: newStatus } as any },
+            data: { status: newStatus },
           })
         );
       }
 
-      return { ...c, status: newStatus };
+      return {
+        ...c,
+        status: newStatus,
+        checkIns: c.checkIns.map((x) => ({ date: x.date.toISOString(), success: x.success })),
+        startDate: c.startDate.toISOString(),
+        endDate: c.endDate.toISOString(),
+        createdAt: c.createdAt.toISOString(),
+      };
     });
 
     if (updates.length) await Promise.all(updates);
@@ -280,15 +183,80 @@ export async function GET(req: Request) {
   }
 }
 
-// DELETE commitment
+// -------------------- POST --------------------
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+
+    const email = String(body?.email || "").trim();
+    const taskType = String(body?.taskType || "").trim();
+    const targetValue = Number(body?.targetValue);
+    const durationDays = Number(body?.durationDays);
+    const stakeCents = Math.max(0, Math.round(Number(body?.stakeCents ?? 0)));
+
+    if (!email || !taskType || !Number.isFinite(targetValue) || !Number.isFinite(durationDays)) {
+      return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+    }
+
+    const user = await db.user.upsert({
+      where: { email },
+      update: {},
+      create: { email },
+      select: { id: true, plan: true },
+    });
+
+    const rules = planRules(user.plan as Plan);
+
+    const activeCount = await db.commitment.count({
+      where: {
+        userId: user.id,
+        status: { in: [CommitmentStatus.created, CommitmentStatus.active] },
+      },
+    });
+
+    if (activeCount >= rules.maxActive) {
+      return NextResponse.json({ error: "Limite d'engagements atteinte pour ton plan" }, { status: 403 });
+    }
+
+    if (stakeCents > rules.maxStakeCents) {
+      return NextResponse.json({ error: "Stake trop élevé pour ton plan" }, { status: 403 });
+    }
+
+    if (taskType === "daily_hard" && !rules.allowDailyHard) {
+      return NextResponse.json({ error: "Cette tâche nécessite un plan supérieur" }, { status: 403 });
+    }
+
+    const startDate = new Date();
+    const endDate = new Date(startDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+    const commitment = await db.commitment.create({
+      data: {
+        userId: user.id,
+        category: "sport",
+        taskType: taskType as TaskType,
+        targetValue,
+        durationDays,
+        startDate,
+        endDate,
+        status: CommitmentStatus.created,
+        stakeCents,
+      },
+    });
+
+    return NextResponse.json({ commitment }, { status: 200 });
+  } catch (error) {
+    console.error(error);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}
+
+// -------------------- DELETE --------------------
 export async function DELETE(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
 
-    if (!id) {
-      return NextResponse.json({ error: "Missing id" }, { status: 400 });
-    }
+    if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
 
     await db.commitment.delete({ where: { id } });
 
