@@ -16,7 +16,7 @@ type CommitmentRow = {
   id: string;
   userId: string;
   category: string;
-  taskType: string;
+  taskType: TaskType;
   targetValue: number;
   durationDays: number;
   startDate: Date;
@@ -28,16 +28,9 @@ type CommitmentRow = {
 };
 
 function planRules(plan: Plan) {
-  if (plan === "builder") {
-    return { maxActive: 3, maxStakeCents: 3000, allowDailyHard: true };
-  }
-  if (plan === "hardcore") {
-    return {
-      maxActive: Number.MAX_SAFE_INTEGER,
-      maxStakeCents: Number.MAX_SAFE_INTEGER,
-      allowDailyHard: true,
-    };
-  }
+  if (plan === "builder") return { maxActive: 3, maxStakeCents: 3000, allowDailyHard: true };
+  if (plan === "hardcore")
+    return { maxActive: Number.MAX_SAFE_INTEGER, maxStakeCents: Number.MAX_SAFE_INTEGER, allowDailyHard: true };
   return { maxActive: 1, maxStakeCents: 1000, allowDailyHard: false };
 }
 
@@ -49,23 +42,18 @@ function computeStatus(input: {
 }): CommitmentStatus {
   const { status, startDate, endDate, checkIns } = input;
 
-  // ⚠️ Si ton enum n'a PAS ces valeurs exactes, ça sera souligné.
-  // Dans ce cas, tu me colles enum CommitmentStatus de schema.prisma et je l'ajuste.
   const created = CommitmentStatus.created;
   const active = CommitmentStatus.active;
   const failed = CommitmentStatus.failed;
   const completed = CommitmentStatus.success;
 
   if (status === failed || status === completed) return status;
+
   const now = new Date();
   const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
-  // created -> active
-  if (status === created) {
-    return startDate <= now ? active : created;
-  }
+  if (status === created) return startDate <= now ? active : created;
 
-  // active -> verdict si terminé
   if (status === active && endDate < todayUTC) {
     const startDay = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
     const endDay = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate()));
@@ -101,19 +89,10 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const email = searchParams.get("email");
+    if (!email) return NextResponse.json({ error: "Missing email" }, { status: 400 });
 
-    if (!email) {
-      return NextResponse.json({ error: "Missing email" }, { status: 400 });
-    }
-
-    const user = await db.user.findUnique({
-      where: { email },
-      select: { id: true },
-    });
-
-    if (!user) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const user = await db.user.findUnique({ where: { email }, select: { id: true } });
+    if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
     const commitments: CommitmentRow[] = await db.commitment.findMany({
       where: { userId: user.id },
@@ -132,13 +111,7 @@ export async function GET(req: Request) {
         stakeCents: true,
         checkIns: {
           orderBy: { date: "asc" },
-          select: {
-            id: true,
-            commitmentId: true,
-            date: true,
-            success: true,
-            createdAt: true,
-          },
+          select: { id: true, commitmentId: true, date: true, success: true, createdAt: true },
         },
       },
     });
@@ -146,7 +119,6 @@ export async function GET(req: Request) {
     const updates: Promise<any>[] = [];
 
     const computed = commitments.map((c: CommitmentRow) => {
-
       const currentStatus = c.status;
 
       const newStatus = computeStatus({
@@ -176,7 +148,6 @@ export async function GET(req: Request) {
     });
 
     if (updates.length) await Promise.all(updates);
-
     return NextResponse.json({ commitments: computed }, { status: 200 });
   } catch (error) {
     console.error(error);
@@ -209,10 +180,7 @@ export async function POST(req: Request) {
     const rules = planRules(user.plan as Plan);
 
     const activeCount = await db.commitment.count({
-      where: {
-        userId: user.id,
-        status: { in: [CommitmentStatus.created, CommitmentStatus.active] },
-      },
+      where: { userId: user.id, status: { in: [CommitmentStatus.created, CommitmentStatus.active] } },
     });
 
     if (activeCount >= rules.maxActive) {
@@ -256,11 +224,9 @@ export async function DELETE(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
-
     if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
 
     await db.commitment.delete({ where: { id } });
-
     return NextResponse.json({ ok: true }, { status: 200 });
   } catch (error) {
     console.error(error);
