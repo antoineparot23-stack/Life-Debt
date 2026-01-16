@@ -18,6 +18,21 @@ type Commitment = {
   checkIns?: { date: string; success: boolean }[];
 };
 
+type DashboardCommitment = {
+  id: string;
+  category: string;
+  taskType: string;
+  targetValue: number;
+  durationDays: number;
+  startDate: string;
+  endDate: string;
+  createdAt: string;
+  status: string;
+  stakeCents: number;
+  checkIns: { date: string; success: boolean }[];
+};
+
+
 const TASK_LABEL: Record<Commitment["taskType"], string> = {
   steps_daily: "Pas / jour",
   km_daily: "Km / jour",
@@ -93,7 +108,7 @@ export default function DashboardPage() {
   const stakeOptionsEuros = [0, 5, 10, 15, 20, 25, 30];
   const [stakeEuros, setStakeEuros] = useState<number>(10);
 
-  const [commitments, setCommitments] = useState<Commitment[]>([]);
+  const [commitments, setCommitments] = useState<DashboardCommitment[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -398,9 +413,10 @@ export default function DashboardPage() {
           <p style={{ opacity: 0.75 }}>Aucun engagement pour l’instant.</p>
         )}
 
-        {commitments.map((c) => {
+        {commitments.map((c: any) => {
+
           const doneToday = c.checkIns?.some(
-            (ci) => ci.success && isToday(ci.date)
+            (ci: any) => ci.success && isToday(ci.date)
           );
           const danger = isInDanger(c);
 
@@ -421,7 +437,7 @@ export default function DashboardPage() {
                   gap: 10,
                 }}
               >
-                <strong>{TASK_LABEL[c.taskType]}</strong>
+                <strong>{TASK_LABEL[c.taskType as keyof typeof TASK_LABEL]}</strong>
                 <span>{statusBadge(c.status)}</span>
               </div>
 
@@ -442,7 +458,7 @@ export default function DashboardPage() {
                 {doneToday ? "✅ Fait aujourd’hui" : "❌ Pas fait aujourd’hui"}
                 {danger && (
                   <span style={{ marginLeft: 10, color: "crimson" }}>
-                    ⚠️ Aujourd’hui est rattrapable, mais la pression est là.
+                    ⚠️ En attente.. 
                   </span>
                 )}
               </div>
