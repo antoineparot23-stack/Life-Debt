@@ -28,11 +28,11 @@
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5"
-  }
+  }  
 }
 
-{
-  "scripts": {
-    "postinstall": "prisma generate"
-  }
-}
+
+
+
+
+
